@@ -1,0 +1,9 @@
+This package contains code and behavioral tests derived from EveryQuery:
+
+  https://github.com/payalchandak/EveryQuery
+  commit 9bd85a1d2c68000aa9362731c7612007d262ac56
+
+EveryQuery is distributed under the MIT License. Its copyright and permission
+notice are preserved by the repository's MIT license and this attribution.
+
+Copyright (c) 2024 Payal Chandak
