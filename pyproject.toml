@@ -8,18 +8,22 @@ dynamic = ["version"] # Makes setuptools-scm manage the version
 authors = [
   {name="florian6973"},
 ]
-description = "Generate reproducible collections of prediction tasks and labels from MEDS datasets"
+description = "Model-independent random query-task sampling for MEDS datasets"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License", # Change if not using MIT license
     "Operating System :: OS Independent",
 ]
 dependencies = [
-  "polars>=1.27,<2",
+  "flexible-schema",
+  "meds>=0.4,<0.5",
+  "numpy>=2,<3",
+  "polars>=1.35,<2",
+  "pyarrow>=17,<22",
   "pyyaml>=6,<7",
-] # Add your runtime dependencies here
+]
 
 [dependency-groups]
 dev = [
@@ -34,10 +38,10 @@ docs = [] # Add your documentation dependencies here (I recommend mkdocs-materia
 
 [tool.setuptools_scm] # Required for setuptools-scm to work, even if empty
 
-[project.optional-dependencies] # Add any optional dependencies here, installable via `pip install .[extra]`
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[project.scripts]
-meds-random-task-sampler = "meds_random_task_sampler.cli:main"
+[project.optional-dependencies] # Add any optional dependencies here, installable via `pip install .[extra]`
 
 [tool.pytest.ini_options] # Default pytest options
 addopts = [

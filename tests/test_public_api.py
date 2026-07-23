@@ -1,0 +1,143 @@
+"""Public configuration, resolution, and end-to-end generation tests."""
+
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import polars as pl
+import pytest
+
+from meds_random_task_sampler import (
+    TaskGridGeneratorConfig,
+    RandomTaskSamplerConfig,
+    TaskQuerySchema,
+    generate_task_grid,
+    read_query_codes,
+    sample_random_tasks,
+)
+
+
+def _write_dataset(root: Path, split: str = "train") -> None:
+    """Write a small, single-shard temporal MEDS dataset."""
+    start = datetime(2020, 1, 1)
+    rows = []
+    for subject_id in (1, 2):
+        for day in range(8):
+            rows.append(
+                {
+                    "subject_id": subject_id,
+                    "time": start + timedelta(days=day),
+                    "code": "TARGET" if day in (4, 7) else "HISTORY",
+                }
+            )
+    fp = root / "data" / split / "0.parquet"
+    fp.parent.mkdir(parents=True)
+    pl.DataFrame(rows).write_parquet(fp)
+
+
+def test_query_code_resolution_owns_all_sources(tmp_path: Path) -> None:
+    """Lists preserve order; YAML and MEDS metadata roots resolve inside the package."""
+    assert read_query_codes(["B", "A", "B"]) == ["B", "A"]
+
+    yaml_fp = tmp_path / "codes.yaml"
+    yaml_fp.write_text("codes: [B, A, B]\n")
+    assert read_query_codes(yaml_fp) == ["B", "A"]
+
+    metadata_fp = tmp_path / "cohort" / "metadata" / "codes.parquet"
+    metadata_fp.parent.mkdir(parents=True)
+    pl.DataFrame({"code": ["B", "A", "B"]}).write_parquet(metadata_fp)
+    assert read_query_codes(metadata_fp.parents[1]) == ["A", "B"]
+
+
+@pytest.mark.parametrize("field", ["num_queries", "num_contexts_per_query"])
+def test_random_config_rejects_zero_budget(field: str) -> None:
+    """Top-level random-sample work axes must be positive."""
+    values = {"num_queries": 1, "num_contexts_per_query": 1}
+    values[field] = 0
+    with pytest.raises(ValueError, match=field):
+        RandomTaskSamplerConfig(
+            **values,
+            min_prediction_times_per_subject=1,
+            query_codes=["TARGET"],
+        )
+
+
+def test_grid_config_rejects_zero_budget() -> None:
+    """Top-level grid work axes must be positive and non-empty."""
+    with pytest.raises(ValueError, match="prediction_times_per_subject"):
+        TaskGridGeneratorConfig(0, 1, ["TARGET"], [30])
+    with pytest.raises(ValueError, match="durations"):
+        TaskGridGeneratorConfig(1, 1, ["TARGET"], [])
+
+
+def test_random_generation_end_to_end(tmp_path: Path) -> None:
+    """The random API produces exactly the requested sampled row budget."""
+    data_dir = tmp_path / "meds"
+    _write_dataset(data_dir)
+    config = RandomTaskSamplerConfig(
+        num_queries=3,
+        num_contexts_per_query=2,
+        min_prediction_times_per_subject=1,
+        query_codes=["TARGET"],
+        min_duration=1,
+        max_duration=2,
+        duration_distribution="uniform",
+        max_workers=1,
+    )
+    result = sample_random_tasks(data_dir, tmp_path / "tasks", "train", config)
+
+    labels = pl.read_parquet(result.output_dir / "0.parquet")
+    assert result.rows == labels.height == 6
+    assert labels.columns == [
+        TaskQuerySchema.subject_id_name,
+        TaskQuerySchema.prediction_time_name,
+        TaskQuerySchema.boolean_value_name,
+        TaskQuerySchema.query_name,
+        TaskQuerySchema.duration_days_name,
+    ]
+    summary = json.loads((result.artifacts_dir / "_summary.json").read_text())
+    assert summary["sampling_strategy"] == "random"
+    assert summary["rows"] == 6
+    assert summary["labels_null"] + summary["labels_false"] + summary["labels_true"] == 6
+
+
+def test_dense_grid_generation_end_to_end(tmp_path: Path) -> None:
+    """The grid API builds fixed tasks and can drop censored rows explicitly."""
+    data_dir = tmp_path / "meds"
+    _write_dataset(data_dir, "held_out")
+    config = TaskGridGeneratorConfig(
+        prediction_times_per_subject=2,
+        min_context_per_subject=1,
+        query_codes=["TARGET", "HISTORY"],
+        durations=[1, 2],
+        censored_rows="drop",
+    )
+    result = generate_task_grid(data_dir, tmp_path / "tasks", "held_out", "0", config)
+
+    labels = pl.read_parquet(result.output_dir / "0.parquet")
+    unique = pl.read_parquet(tmp_path / "tasks_unique" / "held_out" / "0.parquet")
+    assert labels.height == result.rows
+    assert labels[TaskQuerySchema.boolean_value_name].null_count() == 0
+    assert labels.select("query", "duration_days").unique().height == 4
+    assert unique.height <= 4
+    summary = json.loads((result.artifacts_dir / "0.json").read_text())
+    assert summary["sampling_strategy"] == "dense_grid"
+    assert summary["rows"] == labels.height
+    assert summary["labels_null"] == 0
+
+
+def test_dense_grid_can_keep_censored_rows(tmp_path: Path) -> None:
+    """Keeping nullable labels is the purpose-neutral grid default."""
+    data_dir = tmp_path / "meds"
+    _write_dataset(data_dir, "held_out")
+    config = TaskGridGeneratorConfig(
+        prediction_times_per_subject=2,
+        min_context_per_subject=1,
+        query_codes=["NEVER"],
+        durations=[365],
+        write_unique_prediction_times=False,
+    )
+    result = generate_task_grid(data_dir, tmp_path / "grid", "held_out", "0", config)
+    labels = pl.read_parquet(result.output_dir / "0.parquet")
+    assert labels.height == 4
+    assert labels[TaskQuerySchema.boolean_value_name].null_count() == 4

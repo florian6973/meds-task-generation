@@ -1,12 +1,40 @@
-"""Generate reproducible task collections from MEDS datasets."""
+"""Model-independent EveryQuery-compatible MEDS task generation."""
 
-from meds_random_task_sampler.generation import generate_collection
-from meds_random_task_sampler.manifest import CollectionConfig, load_collection_config
-from meds_random_task_sampler.validation import validate_collection
+from meds_random_task_sampler.dense_grid import (
+    TaskGridGeneratorConfig,
+    build_task_grid,
+    generate_task_grid,
+    sample_prediction_times_per_subject,
+    subsample_subject_ids,
+)
+from meds_random_task_sampler.random_sample import (
+    GenerationResult,
+    QueryDistribution,
+    QuerySpec,
+    RandomTaskSamplerConfig,
+    evaluate_index_df,
+    read_query_codes,
+    sample_patient_contexts,
+    sample_random_tasks,
+)
+from meds_random_task_sampler.schema import TaskQuerySchema, empty_task_query_df
+from meds_random_task_sampler.seeds import derive_seed
 
 __all__ = [
-    "CollectionConfig",
-    "generate_collection",
-    "load_collection_config",
-    "validate_collection",
+    "GenerationResult",
+    "QueryDistribution",
+    "QuerySpec",
+    "RandomTaskSamplerConfig",
+    "TaskGridGeneratorConfig",
+    "TaskQuerySchema",
+    "build_task_grid",
+    "derive_seed",
+    "empty_task_query_df",
+    "evaluate_index_df",
+    "generate_task_grid",
+    "read_query_codes",
+    "sample_patient_contexts",
+    "sample_prediction_times_per_subject",
+    "sample_random_tasks",
+    "subsample_subject_ids",
 ]

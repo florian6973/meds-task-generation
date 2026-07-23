@@ -1,88 +1,81 @@
 # MEDS Random Task Sampler
 
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Generate deterministic, model-independent collections of `(code, horizon)` prediction tasks and labels
-from a MEDS dataset.
+Model-independent generation of query-based task rows from MEDS datasets.
 
-> [!WARNING]
-> This package is an early prototype. Its schemas and CLI may change before the first tagged release.
+The package provides two separate workflows:
 
-## Quick start
+- `random_sample`: random `(code, duration)` specifications paired with random patient contexts; and
+- `dense_grid`: explicit `code x duration` grids at sampled patient prediction times.
 
-This repository follows the
-[`McDermottHealthAI/MHAL-template`](https://github.com/McDermottHealthAI/MHAL-template) conventions and
-uses `uv`:
+These names describe how rows are sampled, not how a downstream model must use them. For example, either output
+could be used for training, validation, benchmarking, probing, or analysis.
 
-```bash
-uv sync --group dev
-uv run meds-random-task-sampler generate \
-	--data-dir /path/to/MEDS \
-	--config collection.yaml \
-	--output-dir generated_collection
+Both workflows follow
+[`payalchandak/EveryQuery@9bd85a1`](https://github.com/payalchandak/EveryQuery/commit/9bd85a1d2c68000aa9362731c7612007d262ac56).
+The package owns the shared task schema, code-source resolution, future-occurrence labeling, death and censoring
+semantics, deterministic seeds, and atomic output writes. It does not depend on Hydra or a model framework.
+
+## Random task samples
+
+```python
+from meds_random_task_sampler import RandomTaskSamplerConfig, sample_random_tasks
+
+config = RandomTaskSamplerConfig(
+    num_queries=1024,
+    num_contexts_per_query=1,
+    min_prediction_times_per_subject=50,
+    query_codes="/path/to/MEDS",  # resolves metadata/codes.parquet
+    min_duration=1,
+    max_duration=731,
+    duration_distribution="log-uniform",
+)
+
+result = sample_random_tasks(
+    data_dir="/path/to/MEDS",
+    output_dir="/path/to/random_tasks",
+    split="train",
+    config=config,
+)
 ```
 
-The generated collection reuses the subject assignments in
-`metadata/subject_splits.parquet`; it never creates replacement patient splits. Output includes a resolved
-`manifest.yaml`, task labels, prediction-time indexes, `summary.parquet`, and `summary.json`.
+Output is partitioned under `random_tasks/{split}/*.parquet`; restartable intermediate artifacts use the sibling
+`random_tasks_artifacts/{split}/` directory. Machine-readable summary statistics are written to
+`random_tasks_artifacts/{split}/_summary.json`.
 
-See [DESIGN.md](DESIGN.md) for scope, schema rationale, and planned MEDS-DEV integration.
+## Dense task grids
 
-## Example configuration
+```python
+from meds_random_task_sampler import (
+    TaskGridGeneratorConfig,
+    generate_task_grid,
+)
 
-```yaml
-schema_version: 1
-metadata:
-  name: demo
-  description: Small code-occurrence collection.
-seed: 1
-subjects:
-  splits: [train, tuning, held_out]
-  subsample_fraction: 1.0
-prediction_times:
-  strategy: random_event_time
-  count_per_subject: 1
-  minimum_prior_events: 5
-tasks:
-  type: code_occurrence
-  query_codes:
-    source: explicit
-    values: [DIAGNOSIS//A, DIAGNOSIS//B]
-  horizons_days: [7, 30]
-labeling:
-  window:
-    start_inclusive: false
-    end_inclusive: true
-  censoring:
-    policy: preserve
-output:
-  partition_by: [split]
+config = TaskGridGeneratorConfig(
+    prediction_times_per_subject=1,
+    min_context_per_subject=50,
+    query_codes=["CODE_A", "CODE_B"],
+    durations=[30, 90, 180, 365, 731],
+    write_unique_prediction_times=True,
+    censored_rows="keep",  # or "drop" for current EveryQuery evaluation behavior
+)
+
+result = generate_task_grid(
+    data_dir="/path/to/MEDS",
+    output_dir="/path/to/task_grid",
+    split="held_out",
+    input_shard="0",
+    config=config,
+)
 ```
 
-## Commands
+Grid rows are written to `task_grid/{split}/{shard}.parquet`. Optional unique prediction times use the sibling
+`task_grid_unique/` root and per-shard summaries use `task_grid_summary/`. Nullable/censored labels are retained
+by default; use `censored_rows="drop"` to reproduce current EveryQuery evaluation output.
 
-```bash
-meds-random-task-sampler generate --data-dir MEDS --config collection.yaml --output-dir collection
-meds-random-task-sampler validate --collection-dir collection
-meds-random-task-sampler summarize --collection-dir collection
-```
-
-## Public MIMIC-IV demo
-
-Build the demo with MEDS-DEV, then generate and validate the included six-task collection:
-
-```bash
-meds-dev-dataset dataset=MIMIC-IV demo=True output_dir=/tmp/mimic-iv-demo
-meds-random-task-sampler generate \
-	--data-dir /tmp/mimic-iv-demo \
-	--config examples/mimic_demo.yaml \
-	--output-dir /tmp/mimic-task-collection
-meds-random-task-sampler validate --collection-dir /tmp/mimic-task-collection
-```
-
-The example uses two diagnosis codes and horizons of 7, 30, and 365 days. It is intentionally small enough
-for a public integration test; dataset and generated artifacts remain outside the repository.
+See [DESIGN.md](DESIGN.md) for the behavioral contract and planned EveryQuery adapter boundary.
 
 ## Development
 
@@ -92,5 +85,5 @@ uv run pytest -v
 uv run pre-commit run --all-files
 ```
 
-No clinical or synthetic datasets are committed to this repository. Tests construct temporary MEDS fixtures
-at runtime.
+This repository retains the
+[`McDermottHealthAI/MHAL-template`](https://github.com/McDermottHealthAI/MHAL-template) project structure.

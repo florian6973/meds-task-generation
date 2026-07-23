@@ -1,644 +1,888 @@
-# MEDS Random Task Sampler: Design
+# MEDS Random Task Sampler: EQ-Derived Design
 
-**Status:** Initial design draft
-**Package:** `meds-random-task-sampler`
+**Status:** Initial random-sample and dense-grid implementation
+
+**Repository:** `meds-random-task-sampler`
+
 **Python module:** `meds_random_task_sampler`
 
-## 1. Summary
+**Behavioral reference:** `payalchandak/EveryQuery@9bd85a1d2c68000aa9362731c7612007d262ac56`
+(2026-07-18)
 
-`meds-random-task-sampler` generates reproducible collections of prediction tasks and labels from a
-MEDS dataset. Its initial task language is the single-code, fixed-horizon question:
+**Reference inspected:** 2026-07-22
 
-> Given a subject's history through prediction time `t`, does code `c` occur in the interval
-> `(t, t + h]`?
+## 1. Decision
 
-The package generalizes the evaluation-task generation logic currently used by EveryQuery without
-depending on EveryQuery or any other model. MEDS-DEV can use the generated collection as a benchmark
-artifact, while model packages can consume it for zero-shot prediction, probing, fine-tuning, or
-joint multitask learning.
+The first implementation will extract both of EveryQuery's current task-generation workflows into a
+model-independent MEDS package:
 
-The package owns task definition, prediction-time sampling, labeling, censoring, manifests, and
-schema validation. It does not own model preprocessing, model training, prediction, metric
-calculation, or result packaging.
+1. sparse random tasks for model training; and
+2. dense fixed-task grids for model evaluation.
 
-## 2. Repository foundation
+EveryQuery is the behavioral reference for both workflows, including their distinct sampling rules,
+random-number behavior, task-row schema, prediction-time eligibility, sharding constraints, death handling,
+censoring precedence, restart behavior, and output layout.
 
-The repository will be created from
-[`McDermottHealthAI/MHAL-template`](https://github.com/McDermottHealthAI/MHAL-template), rather than
-assembled as an ad hoc Python project. In particular, it will retain the template's conventions:
+The removed prototype is not an implementation base. In particular, the new package will not begin with an
+all-shards-in-memory evaluation grid and incrementally turn it into a training sampler. It will begin with the
+five-stage EQ training architecture.
 
-- `uv` for dependency and environment management;
-- a `src/meds_random_task_sampler/` package layout;
-- `pytest` and doctests, with doctests treated as first-class tests;
-- Ruff formatting and linting using the Google Python style;
-- pre-commit hooks, secret scanning, and the existing GitHub Actions structure;
-- `setuptools-scm` versioning from Git tags;
-- `AGENTS.md` and `CONTRIBUTORS.md` as contributor guidance;
-- no clinical or synthetic dataset artifacts committed to the repository.
+The initial success criterion is behavioral equivalence with the pinned EQ commit for both workflows on frozen
+compatibility fixtures. Generalization comes after equivalence.
 
-The initial implementation should customize, not remove, those template files. The package name,
-repository URLs, authors, description, and Ruff first-party import configuration must all be updated
-from the template placeholders.
+## 2. Why this package should exist
 
-## 3. Motivation
+EveryQuery currently owns infrastructure that is useful beyond the EveryQuery model:
 
-MEDS-DEV currently treats a benchmark task as a single binary prediction problem. This works well
-for task-specific models, but it does not natively represent one model trained or evaluated over a
-collection of tasks.
+- resolving a MEDS code universe;
+- constructing eligible patient prediction-time maps;
+- sampling random `(code, duration)` query specifications;
+- sampling random patient contexts;
+- pairing queries and contexts deterministically;
+- labeling future code occurrence with censoring and terminal-event semantics;
+- partitioning work by MEDS shard;
+- atomically writing restartable sampled-task datasets;
+- constructing dense evaluation grids over fixed `(code, duration)` tasks;
+- filtering censored evaluation rows and optionally writing unique prediction times.
 
-Several model families benefit from a task-collection abstraction:
+None of these operations requires an EveryQuery neural network, PyTorch, Lightning, Hydra, or a learned query
+embedding. Moving them to a small package lets another model consume the same random training distribution
+without importing EveryQuery's model stack.
 
-- query-conditioned models such as EveryQuery;
-- multi-outcome survival models such as MOTOR;
-- frozen encoders evaluated with many linear probes;
-- jointly trained multitask models;
-- tabular in-context models such as TabPFN;
-- autoregressive models whose generated futures can be resolved against many outcomes.
+EveryQuery should retain thin adapters so existing `EQ_generate_training_tasks` and
+`EQ_generate_evaluation_tasks` commands continue to work.
 
-The benchmark task collection must be independent of all of these models so that they are evaluated
-against identical task definitions, patients, prediction times, labels, and censoring decisions.
+## 3. Source of truth and provenance
 
-## 4. Goals
+The reference implementation is:
 
-The first release should:
+- `src/every_query/generate_tasks/sample_tasks.py`;
+- `src/every_query/generate_tasks/sample_evaluation_tasks.py`;
+- `src/every_query/generate_tasks/redesign-spec.md`;
+- `src/every_query/generate_tasks/configs/sample_training_tasks_config.yaml`;
+- `src/every_query/generate_tasks/configs/sample_evaluation_tasks_config.yaml`;
+- `src/every_query/data/schema.py`;
+- `src/every_query/utils/seeds.py`;
+- `tests/sampler/` and the sampler integration tests.
 
-1. Generate a fixed collection of `(query_code, horizon_days)` tasks.
-2. Sample prediction times deterministically from MEDS event data.
-3. Generate labels on the `train`, `tuning`, and `held_out` patient splits.
-4. Represent censoring explicitly and consistently.
-5. Produce a self-describing, versioned manifest.
-6. Support explicit in-distribution and held-out-query-code partitions.
-7. Produce deterministic output independent of worker count and shard scheduling.
-8. Expose a CLI for benchmark orchestration and a Python API reusable by model packages.
-9. Remain independent of EveryQuery, MEDS-DEV, PyTorch, and any particular model framework.
-10. Make a singleton task collection a valid special case.
+The reference commit is recorded above so later EQ changes do not silently change this design's meaning.
+Before extraction begins, the relevant EveryQuery tests will be copied as behavioral specifications with
+appropriate attribution under the compatible MIT license. Implementation code should be rewritten behind the
+package API rather than copied wholesale without an ownership review.
 
-## 5. Non-goals
+Any deliberate divergence from the reference must be documented in a compatibility ledger with:
 
-The initial package will not:
+1. the EQ behavior;
+2. the package behavior;
+3. the rationale;
+4. an explicit test;
+5. the expected effect on previously generated rows.
 
-- preprocess MEDS data into model-specific tensors;
-- train or load models;
-- implement EveryQuery's random pretraining-query sampler as a MEDS-DEV benchmark stage;
-- emit model predictions;
-- calculate AUROC, AUPRC, calibration, or survival metrics;
-- package or publish MEDS-DEV results;
-- express arbitrary ACES logic, composite outcomes, readmission, or numeric-value predicates;
-- define a general clinical task language in the first release;
-- silently approximate an unsupported task.
+## 4. Package workflows
 
-Reusable low-level sampling and labeling functions may later be called by a model's internal
-training recipe. Such use does not make model-specific pretraining artifacts part of the MEDS-DEV
-benchmark contract.
+Version 0.1 will provide two explicit public workflows that share infrastructure but produce different task
+shapes.
 
-## 6. Ownership boundaries
+### 4.1 Random task samples
 
 ```text
-MEDS dataset
-    |
-    v
-meds-random-task-sampler
-    |-- task collection manifest
-    |-- prediction-time index
-    `-- labels for train/tuning/held_out
-              |
-              v
-model package (EveryQuery, MOTOR, probe, TabPFN, ...)
-    |-- model-specific preprocessing
-    |-- optional pretraining/adaptation
-    `-- predictions keyed by task_id
-              |
-              v
-meds-evaluation
-    |-- per-task metrics
-    `-- collection aggregates
-              |
-              v
-MEDS-DEV orchestration and result packaging
+MEDS event shards
+    + query-code universe
+    + query distribution
+    + patient-context distribution
+    -> sparse labeled random task rows
 ```
 
-### 6.1 MEDS-DEV-owned behavior
+One output row asks:
 
-MEDS-DEV selects the registered task-collection configuration, invokes task generation, passes the
-result to a model recipe, invokes evaluation, and packages results.
+> For `subject_id` at `prediction_time`, does `query` occur in
+> `(prediction_time, prediction_time + duration_days]`?
 
-### 6.2 Model-owned behavior
+The initial sampler supports:
 
-A model owns all internal training decisions. For example, an EveryQuery model may use
-`meds-random-task-sampler` Python primitives to generate millions of scattered pretraining queries, but
-that operation occurs inside the model's training command and is not a direct MEDS-DEV task stage.
+- a single MEDS code per query;
+- continuous positive durations in days;
+- uniform code sampling;
+- uniform or log-uniform duration sampling;
+- random subjects sampled with replacement;
+- random eligible prediction times sampled with replacement through their subject draws;
+- nullable Boolean occurrence labels;
+- one MEDS split per invocation;
+- shard-parallel labeling on one node;
+- deterministic restartable output.
 
-### 6.3 Evaluation-owned behavior
-
-Metric computation belongs in `meds-evaluation`. This package may validate prediction keys against a
-task manifest, but it will not score predictions.
-
-## 7. Two distinct label products
-
-It is important not to conflate benchmark labels with model-specific pretraining samples.
-
-### 7.1 Fixed benchmark collection
-
-The benchmark collection contains a stable set of task definitions across the canonical MEDS patient
-splits. It does **not** assign subjects to new splits. The authoritative assignment remains
-`{data_dir}/metadata/subject_splits.parquet`; task generation joins labels to that mapping and may partition
-outputs by its existing `split` values for convenience:
+### 4.2 Dense task grids
 
 ```text
-collection/
-|-- manifest.yaml
-`-- labels/
-    |-- train/
-    |   `-- *.parquet
-    |-- tuning/
-    |   `-- *.parquet
-    `-- held_out/
-        `-- *.parquet
+one MEDS event shard
+    + fixed query-code universe
+    + fixed integer duration horizons
+    + per-subject prediction-time sampling
+    -> dense labeled evaluation rows
+    -> censored rows removed
+    -> optional unique prediction-time rows
 ```
 
-The `train` labels allow probes and supervised models to adapt to the benchmark tasks. The `tuning`
-and `held_out` labels support model selection and final evaluation. A zero-shot model may ignore
-the training labels.
-
-This differs from current ACES/MEDS-DEV storage, where one ACES task is extracted across all data shards and
-its MEDS label rows are keyed by `subject_id` and `prediction_time`; the subject's split is inferred from the
-MEDS metadata. A collection may physically partition its larger output by split, but that is a projection of
-the existing mapping, not a second split definition.
-
-### 7.2 Model-specific training samples
-
-Model-specific samples may use different task distributions, horizons, prediction-time policies,
-and row shapes. They are not benchmark task definitions and do not determine benchmark identity.
-
-## 8. Authored configuration, resolved manifest, and task identity
-
-`collection.yaml` and `manifest.yaml` serve different purposes:
-
-- `collection.yaml` is the human-authored, portable generation request. It may use compact Cartesian-product
-    declarations and references to code-list files or MEDS metadata.
-- `manifest.yaml` is the immutable, fully resolved output. It lists every concrete task and records the
-    dataset fingerprint, resolved codes, derived task IDs, generation parameters, and observed provenance.
-
-An illustrative authored `collection.yaml` is:
-
-```yaml
-schema_version: 1
-
-metadata:
-  name: mimic-demo-code-occurrence-v1
-  description: Fixed code-occurrence collection for integration testing.
-
-seed: 1
-
-subjects:
-  splits: [train, tuning, held_out]
-  subsample_fraction: 1.0
-
-prediction_times:
-  strategy: random_event_time
-  count_per_subject: 1
-  minimum_prior_events: 50
-
-tasks:
-  type: code_occurrence
-  query_codes:
-    source: explicit
-    values:
-      - ICD10CM//I10
-      - ICD10CM//E11
-  horizons_days: [7, 30, 365]
-  groups:
-    in_distribution:
-      query_codes: [ICD10CM//I10]
-    held_out_query:
-      query_codes: [ICD10CM//E11]
-
-labeling:
-  window:
-    start_inclusive: false
-    end_inclusive: true
-  censoring:
-    policy: preserve
-
-output:
-  partition_by: [split]
-```
-
-The `groups` field attaches benchmark-protocol metadata to tasks; it does not itself train a model or remove
-codes from patient histories. A model recipe is responsible for honoring a held-out-query protocol.
-
-Alternative code sources may include an external YAML list or a MEDS `metadata/codes.parquet` file, but all
-such sources are expanded into concrete values in `manifest.yaml`. The first release should support either a
-Cartesian-product declaration or an explicit `tasks: [...]` list, not arbitrary templating.
-
-Every task must have a stable `task_id`. It must be derived from a canonical task definition, not
-from list position or row order.
-
-An initial canonical task payload is:
-
-```yaml
-type: code_occurrence
-query_code: ICD10CM//I10
-horizon_days: 30
-window:
-  start_inclusive: false
-  end_inclusive: true
-```
-
-`task_id` should combine a human-readable slug with a digest of canonical serialized content. The
-digest prevents collisions when slugs are truncated or normalized.
-
-An illustrative resolved `manifest.yaml` is:
-
-```yaml
-schema_version: 1
-generator:
-  package: meds-random-task-sampler
-  version: 0.1.0
-seed: 1
-
-dataset:
-  fingerprint: '...'
-
-prediction_times:
-  count_per_subject: 1
-  minimum_prior_events: 50
-  sampling: without_replacement
-
-tasks:
-  - task_id: icd10cm-i10--30d--a1b2c3d4
-    type: code_occurrence
-    query_code: ICD10CM//I10
-    horizon_days: 30
-    query_partition: in_distribution
-
-  - task_id: icd10cm-e11--30d--d4c3b2a1
-    type: code_occurrence
-    query_code: ICD10CM//E11
-    horizon_days: 30
-    query_partition: held_out
-
-source_splits:
-  path: metadata/subject_splits.parquet
-  included: [train, tuning, held_out]
-  fingerprint: '...'
-```
-
-The manifest written to disk must contain fully resolved code lists and task definitions. It must
-not rely on external YAML aliases, unresolved Hydra interpolation, or mutable metadata files.
-
-## 9. Query-code partitions
-
-Patient splits and query-code partitions are independent axes. Patient splits are read from MEDS and never
-resampled by this package:
-
-| Axis                 | Training                           | Validation           | Test       |
-| -------------------- | ---------------------------------- | -------------------- | ---------- |
-| Patients             | `train`                            | `tuning`             | `held_out` |
-| ID query codes       | available                          | available            | evaluated  |
-| Held-out query codes | excluded from model query training | optionally monitored | evaluated  |
-
-Holding out a code means excluding it from a model's query-target training distribution. It does
-not remove the code from patient histories or from the MEDS vocabulary.
-
-The package must validate explicit policies, including:
-
-- `allow_overlap`: no non-overlap requirement;
-- `held_out_from_training`: held-out evaluation codes must not appear in the training-query list;
-- `fully_disjoint`: all named query partitions must be pairwise disjoint.
-
-The resolved manifest must record both the policy and the observed intersections. A violated policy
-must fail before label generation.
-
-## 10. Prediction-time sampling
-
-The initial sampler will select up to `K` distinct prediction times per subject. A candidate time
-must satisfy a declared minimum-history condition.
-
-Required properties:
-
-- deterministic in the global seed, dataset split, subject ID, and candidate timestamp;
-- sampling without replacement within a subject;
-- invariant to input shard order, worker count, and parallel scheduling;
-- stable when unrelated subjects are added or removed, where practical;
-- explicit behavior when a subject has fewer than `K` eligible times;
-- a separate deterministic subject-subsampling policy for demo and low-cost runs.
-
-Hash-ranking candidate times per subject is preferred over a stateful global random-number stream
-because it is easier to make invariant to execution order.
-
-## 11. Label semantics and censoring
-
-For prediction time `t`, query code `c`, and horizon `h`, the initial task asks whether `c` occurs in
-the interval `(t, t + h]`.
-
-The label has three logical states:
-
-- `true`: the event occurs within the window;
-- `false`: the full window is observed and the event does not occur;
-- censored: follow-up ends before the window closes and no qualifying event was observed first.
-
-Unlike a bounded ACES task whose cohort definition can exclude cases without an observable target window,
-arbitrary `(code, horizon)` tasks encounter right censoring whenever a subject's observable record ends
-before `t + h`. Treating those rows as negatives would be incorrect. Avoiding censoring by requiring complete
-follow-up through the largest horizon is possible, but changes the cohort, leaks future record length into
-eligibility, and can remove many subjects.
-
-The generator should therefore detect censoring even if the selected output policy later drops censored rows.
-The supported policies should be:
-
-- `preserve` (default): keep censored rows with a nullable label;
-- `drop`: detect and count censored rows, then omit them from model-facing labels;
-- `require_full_followup`: define eligibility using complete follow-up through the collection's maximum
-    horizon; intended only for explicitly chosen sensitivity analyses.
-
-A proposed schema for the default `preserve` policy is:
-
-```text
-subject_id: int64
-prediction_time: timestamp[us]
-task_id: string
-boolean_value: bool, nullable
-is_censored: bool
-query_code: string
-horizon_days: float32
-```
-
-`boolean_value = null` and `is_censored = true` represent censoring. The explicit flag makes filtering and
-validation less error-prone, while the nullable value is a compact three-state representation. Because the
-current MEDS label schema and ACES output are ordinary observed labels, the collection extension must be
-reconciled with those schemas before implementation. If compatibility requires a strict MEDS label export,
-that export can contain only observed rows while the canonical collection table retains censoring.
-
-Event occurrence before loss to follow-up takes precedence over censoring. Death and other terminal
-events require a declared dataset/task policy rather than an implicit special case.
-
-## 12. Output layout
-
-The proposed output layout is:
-
-```text
-output_dir/
-|-- manifest.yaml
-|-- summary.parquet
-|-- summary.json
-|-- metadata/
-|   |-- tasks.parquet
-|   `-- generation.json
-|-- prediction_times/
-|   |-- train/*.parquet
-|   |-- tuning/*.parquet
-|   `-- held_out/*.parquet
-`-- labels/
-    |-- train/*.parquet
-    |-- tuning/*.parquet
-    `-- held_out/*.parquet
-```
-
-The prediction-time index is stored independently because several model families can perform
-expensive task-agnostic inference once per `(subject_id, prediction_time)` and resolve many tasks
-afterward.
-
-Final output directories must not contain transient artifacts. Temporary and cached intermediates
-belong in a separate sibling directory or a caller-provided cache directory.
-
-### 12.1 Summary statistics
-
-`summary.parquet` is the canonical machine-readable summary, with one row per `(split, task_id)` and at least:
-
-```text
-split
-task_id
-n_rows
-n_subjects
-n_prediction_times
-n_observed
-n_censored
-n_positive
-n_negative
-prevalence_observed
-```
-
-It should also contain aggregate rows or be accompanied by `summary.json` containing overall counts,
-generation duration, warnings, and the number of degenerate tasks. Statistics are descriptive properties of
-generated labels, not model-evaluation metrics. They must be computed from final outputs and validated against
-them, rather than maintained as independent counters that can drift.
-
-## 13. Public interfaces
-
-### 13.1 CLI
-
-The first CLI should be a single end-to-end command:
-
-```bash
-meds-random-task-sampler generate \
-	data_dir="$MEDS_DATASET" \
-	config=collection.yaml \
-	output_dir="$TASK_COLLECTION"
-```
-
-Useful inspection commands may follow:
-
-```bash
-meds-random-task-sampler validate collection_dir="$TASK_COLLECTION"
-meds-random-task-sampler summarize collection_dir="$TASK_COLLECTION"
-```
-
-The initial CLI should avoid exposing pipeline-internal stages as separate user-facing commands.
-Internal stages can remain testable Python functions.
-
-### 13.2 Python API
-
-The public API should center on typed, model-independent objects:
+For every sampled `(subject_id, prediction_time)`, evaluation constructs the full Cartesian product of caller-
+specified query codes and duration horizons. This produces the dense shape needed to calculate metrics for every
+`(query, duration_days)` task over a split.
+
+To match EQ, evaluation:
+
+- operates on one named input shard per invocation, allowing external parallelism across shards;
+- samples up to `prediction_times_per_subject` candidate times without replacement for each subject;
+- defines eligibility using the count of prior events, not the training sampler's distinct-prediction-time map;
+- optionally applies deterministic subject subsampling;
+- uses fixed caller-provided integer duration horizons rather than sampled continuous durations;
+- explicitly keeps or drops rows whose `boolean_value` is null after labeling; and
+- optionally writes deduplicated `(subject_id, prediction_time)` rows for trajectory generation.
+
+`random_sample` and `dense_grid` deliberately remain separate entry points and typed configurations. These names
+describe sampling shape rather than prescribing downstream use as training or evaluation. A mode flag on one
+ambiguous API would hide meaningful differences in sampling unit, eligibility, sharding, censor handling, and
+output cardinality.
+
+## 5. Non-goals for version 0.1
+
+The package will not initially:
+
+- train or load EveryQuery;
+- depend on PyTorch, Lightning, Transformers, or Weights & Biases;
+- own Hydra configuration;
+- tensorize MEDS data;
+- create patient train/tuning/test assignments;
+- calculate AUROC or other metrics;
+- sample EveryQuery's validation tracking pairs;
+- define ACES predicates or composite clinical outcomes;
+- weight codes by empirical frequency;
+- support distributed multi-node labeling;
+- promise stability for artifacts explicitly marked internal.
+
+The package generates EQ-compatible evaluation labels; it does not own model inference or metric calculation.
+
+## 6. Ownership boundary
+
+### 6.1 Package-owned
+
+The package owns:
+
+- core dataclasses and validation;
+- `TaskQuerySchema` and its empty-frame/schema-alignment helpers;
+- stable seed derivation;
+- query-code resolution;
+- random query sampling;
+- eligible prediction-time map construction;
+- random patient-context sampling;
+- query/context pairing;
+- per-subject evaluation-time sampling;
+- dense evaluation-grid construction;
+- evaluation censor filtering and unique-time output;
+- shard partitioning;
+- occurrence labeling;
+- death truncation and censoring semantics;
+- atomic writes and cache validation;
+- row-count and schema validation;
+- provenance and summary metadata.
+
+### 6.2 EveryQuery-owned
+
+EveryQuery retains:
+
+- the `EQ_generate_training_tasks` and `EQ_generate_evaluation_tasks` commands;
+- Hydra configuration and command-line overrides;
+- translation from `DictConfig` into package dataclasses;
+- temporary re-exports of moved sampler and schema symbols during migration;
+- downstream `EveryQueryPytorchDataset` behavior;
+- token/vocabulary consistency with the trained model;
+- model training, prediction, tracking callbacks, and metrics.
+
+The adapter may re-export package types temporarily to avoid breaking internal imports during migration.
+
+### 6.3 MEDS-DEV-owned
+
+MEDS-DEV may invoke an EveryQuery model recipe that internally requests random pretraining tasks. Random
+training rows are not a benchmark definition and should not become a MEDS-DEV task stage. Patient splits remain
+the MEDS dataset's existing splits.
+
+## 7. Public API
+
+The core must not accept Hydra or OmegaConf objects. Random sampling and dense-grid generation have separate
+top-level APIs:
 
 ```python
-manifest = TaskCollectionManifest.from_yaml("collection.yaml")
-resolved = resolve_collection(manifest, dataset_dir)
-generate_collection(resolved, dataset_dir, output_dir)
-validate_collection(output_dir)
+from pathlib import Path
+
+from meds_random_task_sampler import (
+    TaskGridGeneratorConfig,
+    QueryDistribution,
+    RandomTaskSamplerConfig,
+    generate_task_grid,
+    sample_random_tasks,
+)
+
+config = RandomTaskSamplerConfig(
+    num_queries=1024,
+    num_contexts_per_query=1,
+    min_prediction_times_per_subject=50,
+    query_distribution=QueryDistribution(
+        query_codes=("A", "B"),
+        min_duration_days=1.0,
+        max_duration_days=731.0,
+        duration_distribution="log-uniform",
+    ),
+    seed=1,
+    max_workers=None,
+)
+
+result = sample_random_tasks(
+    data_dir=Path("/path/to/MEDS"),
+    output_dir=Path("/path/to/training_tasks"),
+    split="train",
+    config=config,
+    overwrite=False,
+)
+
+grid_config = TaskGridGeneratorConfig(
+    prediction_times_per_subject=1,
+    min_context_per_subject=50,
+    query_codes=("A", "B"),
+    durations=(30, 90, 180, 365, 731),
+    subject_subsample_fraction=None,
+    write_unique_prediction_times=True,
+    seed=1,
+)
+
+grid_result = generate_task_grid(
+    data_dir=Path("/path/to/MEDS"),
+    output_dir=Path("/path/to/task_grid"),
+    split="held_out",
+    input_shard="0",
+    config=grid_config,
+    overwrite=False,
+)
 ```
 
-Lower-level functions for code resolution, prediction-time sampling, grid construction, and
-labeling should be public only when they have stable schemas and deterministic contracts.
+Each result is a small immutable run-result object containing output paths and counts, not the full generated
+dataset in memory.
 
-## 14. Proposed source layout
+Pure stage functions remain public enough for testing and advanced orchestration:
 
-Following the MHAL template:
+```python
+build_prediction_time_map(...)
+sample_queries(...)
+sample_patient_contexts(...)
+build_partitioned_index(...)
+label_index_partition(...)
+label_partitions(...)
+sample_prediction_times_per_subject(...)
+build_task_grid(...)
+label_task_grid_shard(...)
+```
+
+File-system orchestration should depend on these pure or narrowly stateful primitives, rather than combining
+all behavior inside the CLI.
+
+## 8. Configuration model
+
+Core configuration uses frozen dataclasses or an equivalently strict typed model. It must reject Boolean values
+where integers are expected and reject non-finite numeric bounds.
+
+### 8.1 Training configuration
+
+```yaml
+schema_version: 1
+seed: 1
+split: train
+
+sampling:
+  num_queries: 1024
+  num_contexts_per_query: 1
+  min_prediction_times_per_subject: 50
+
+query_distribution:
+  codes:
+    source: meds_metadata
+    path: /path/to/cohort
+  code_distribution: uniform
+  duration_distribution: log-uniform
+  min_duration_days: 1.0
+  max_duration_days: 731.0
+
+execution:
+  max_workers:
+  overwrite: false
+```
+
+The package resolves `query_codes` before sampling. It accepts an ordinary Python sequence, a YAML or Parquet
+path, or a MEDS metadata root containing `metadata/codes.parquet`; it never accepts Hydra `ListConfig` directly.
+Explicit sequences preserve order while removing duplicates. File-derived codes are deduplicated and sorted.
+
+The first EveryQuery training adapter maps its existing Hydra keys onto this model. Renaming EQ's CLI keys is
+not part of the first integration PR. The semantic mapping is nearly one-to-one:
+
+| EveryQuery Hydra key               | Package field                               | Translation               |
+| ---------------------------------- | ------------------------------------------- | ------------------------- |
+| `num_queries`                      | `sampling.num_queries`                      | none                      |
+| `num_contexts_per_query`           | `sampling.num_contexts_per_query`           | none                      |
+| `min_prediction_times_per_subject` | `sampling.min_prediction_times_per_subject` | none                      |
+| `query_codes`                      | `query_distribution.codes`                  | convert `ListConfig` only |
+| `min_duration`                     | `query_distribution.min_duration_days`      | float conversion          |
+| `max_duration`                     | `query_distribution.max_duration_days`      | float conversion          |
+| `duration_distribution`            | `query_distribution.duration_distribution`  | none                      |
+| `data_dir`                         | `sample_random_tasks(data_dir=...)`         | path conversion           |
+| `out_dir`                          | `sample_random_tasks(output_dir=...)`       | path conversion           |
+| `split`                            | `sample_random_tasks(split=...)`            | none                      |
+| `seed`                             | `seed`                                      | none                      |
+| `max_workers`                      | `execution.max_workers`                     | none                      |
+| `overwrite`                        | `execution.overwrite`                       | none                      |
+
+The nesting is an authored-package organization choice, not a semantic change. If it creates needless adapter or
+CLI complexity, version 0.1 may instead expose a flat `RandomTaskSamplerConfig` with the exact EQ field names.
+Hydra remains outside the package either way.
+
+### 8.2 Dense-grid configuration
+
+```yaml
+schema_version: 1
+seed: 1
+split: held_out
+input_shard: '0'
+
+evaluation:
+  prediction_times_per_subject: 1
+  min_context_per_subject: 50
+  query_codes:
+    source: meds_metadata
+    path: /path/to/cohort
+  durations: [30, 90, 180, 365, 731]
+  subject_subsample_fraction:
+  write_unique_prediction_times: true
+  censored_rows: keep
+
+execution:
+  overwrite: false
+```
+
+The evaluation adapter is also nearly one-to-one. It passes `input_shard` explicitly because EQ parallelizes
+evaluation through a Hydra shard sweep, unlike the training driver, which fans out labeling internally.
+
+| EveryQuery Hydra key            | Package field                              | Translation               |
+| ------------------------------- | ------------------------------------------ | ------------------------- |
+| `prediction_times_per_subject`  | `evaluation.prediction_times_per_subject`  | none                      |
+| `min_context_per_subject`       | `evaluation.min_context_per_subject`       | none                      |
+| `query_codes`                   | `evaluation.query_codes`                   | convert `ListConfig` only |
+| `durations`                     | `evaluation.durations`                     | tuple conversion          |
+| `subject_subsample_fraction`    | `evaluation.subject_subsample_fraction`    | none                      |
+| `write_unique_prediction_times` | `evaluation.write_unique_prediction_times` | none                      |
+| `data_dir`, `out_dir`, `split`  | `generate_task_grid(...)` arguments        | path conversion           |
+| `input_shard`                   | `generate_task_grid(input_shard=...)`      | string conversion         |
+| `seed`                          | `seed`                                     | none                      |
+| `overwrite`                     | `execution.overwrite`                      | none                      |
+
+Both public configurations reject a zero work budget. Training requires `num_queries > 0` and
+`num_contexts_per_query > 0`; evaluation requires `prediction_times_per_subject > 0`, at least one resolved code,
+and at least one duration. Lower-level pure helpers may return typed empty frames for empty data, but requesting
+zero work through a top-level generator is a configuration error.
+
+## 9. Canonical row schema
+
+For zero-copy EveryQuery compatibility, version 0.1 uses the existing EQ task-query field names:
+
+| Column            | Type                 | Meaning                                  |
+| ----------------- | -------------------- | ---------------------------------------- |
+| `subject_id`      | MEDS subject ID type | Patient identifier                       |
+| `prediction_time` | `datetime[us]`       | Inclusive history cutoff                 |
+| `query`           | UTF-8 string         | MEDS code queried                        |
+| `duration_days`   | `float32`            | Continuous positive future horizon       |
+| `boolean_value`   | nullable Boolean     | `true`, `false`, or `null` when censored |
+
+The package owns `TaskQuerySchema`, including its nullable `boolean_value`, Arrow alignment contract, and
+empty-frame helper. EveryQuery imports and temporarily re-exports that class so existing downstream imports can
+migrate without a flag day. This moves the producer-consumer row contract together with the producer.
+
+There is no `task_id` in random training output. Continuous durations make most sampled query specifications
+unique, and training consumes rows rather than a stable benchmark task registry.
+
+There is no separate `is_censored` column in the compatibility output: `boolean_value == null` is the EQ
+contract. A future enriched output may expose censoring explicitly, but not by changing the default EQ-compatible
+schema.
+
+## 10. Exact sampling contract
+
+### 10.1 Seed derivation
+
+Derived seeds use EQ's cross-process-stable BLAKE2b algorithm and 31-bit mask. The two initial streams are:
 
 ```text
-meds-random-task-sampler/
-|-- .github/
-|-- AGENTS.md
-|-- CONTRIBUTORS.md
-|-- DESIGN.md
-|-- README.md
-|-- pyproject.toml
-|-- src/
-|   `-- meds_random_task_sampler/
-|       |-- __init__.py
-|       |-- __main__.py
-|       |-- cli.py
-|       |-- schemas.py
-|       |-- manifest.py
-|       |-- codes.py
-|       |-- prediction_times.py
-|       |-- labeling.py
-|       |-- censoring.py
-|       |-- generation.py
-|       `-- validation.py
-`-- tests/
+derive_seed(seed, "queries")
+derive_seed(seed, "contexts")
 ```
 
-## 15. MEDS-DEV integration
+Python's salted `hash()` must never influence sampling.
 
-The first MEDS-DEV integration should treat a task collection as a generated, cacheable benchmark
-artifact:
+### 10.2 Query draw
+
+For `Q = num_queries`:
+
+1. Resolve and deterministically order the code universe.
+2. Draw all `Q` uniform code indices first.
+3. Draw all `Q` durations second from the configured distribution.
+4. Zip them into `Q` `QuerySpec(code, duration_days)` values.
+
+Log-uniform durations are sampled by drawing uniformly in log space and exponentiating. Durations remain
+unrounded Python floats until the partitioned index write, where they align to `float32`.
+
+### 10.3 Patient-context draw
+
+Let `N = num_queries * num_contexts_per_query`.
+
+1. Sort the eligible subject-count table by `subject_id`.
+2. Draw all `N` subject row indices uniformly with replacement.
+3. Gather each sampled subject's `n_prediction_times`.
+4. Draw all `N` prediction-time indices with array bounds:
 
 ```text
-demo_dataset
-    -> task_collection
-        -> model run
-            -> collection predictions
-                -> evaluation
+low  = min_prediction_times_per_subject
+high = n_prediction_times[sampled_subject]
 ```
 
-Existing single-task models can consume a collection by iterating over its tasks. Collection-aware
-models can consume the entire manifest and label dataset in one run.
+The upper bound is exclusive, so the last prediction time is eligible. Subjects are eligible only when
+`n_prediction_times > min_prediction_times_per_subject`.
 
-A singleton collection should be exportable to the current MEDS-DEV single-task layout, allowing
-backward-compatibility tests without immediately changing all model integrations.
+The draw order is part of the compatibility contract. Changing vectorization or interleaving subject/time draws
+may change every sampled row for the same seed.
 
-## 16. Model integration examples
+### 10.4 Pairing
 
-### 16.1 EveryQuery
+Each sampled query is repeated `num_contexts_per_query` consecutive times and zipped with the `N` contexts.
+Duplicates are valid and must not be removed.
 
-- Uses the fixed task collection for evaluation.
-- May reuse labeling primitives inside its own pretraining command.
-- Owns random pretraining-query generation, tensorization, training, and query-conditioned prediction.
+## 11. Generation pipelines
 
-### 16.2 MOTOR
+### 11.1 Random training pipeline
 
-- Can query compatible native survival heads for `(code, horizon)` tasks.
-- Can use collection training labels for frozen probes or fine-tuning.
-- Requires a future survival-label extension for faithful time-to-event adaptation.
+### Stage 0: prediction-time map
 
-### 16.3 TabPFN
+Scan `data/{split}/*.parquet`, reading temporal identity columns and the code required for death truncation.
 
-- Reuses dataset-level tabularization across tasks.
-- Builds label-conditioned context or fitted state per task.
-- Can process the collection in one orchestrated run even though adaptation remains task-specific.
+For each subject:
 
-### 16.4 Autoregressive models
+1. truncate events strictly after the earliest `MEDS_DEATH` event;
+2. deduplicate `(subject_id, time)`;
+3. sort distinct times ascending;
+4. assign a gapless zero-based `prediction_time_index`;
+5. calculate `n_prediction_times`;
+6. retain subjects with `n_prediction_times > minimum`.
 
-- Use `prediction_times/` for one task-agnostic generation pass.
-- Resolve all collection tasks against the same generated futures.
+A subject appearing in multiple shards is a hard error. Version 0.1 will preserve this EQ invariant rather than
+silently repartitioning data.
 
-## 17. Reproducibility and provenance
+Outputs:
 
-The generated artifact must record:
+```text
+artifacts/{split}/_prediction_times/{shard}.parquet
+artifacts/{split}/_prediction_time_counts.parquet
+artifacts/{split}/_prediction_times_meta.json
+```
 
-- package and schema versions;
-- normalized configuration;
-- global and derived seeds;
-- dataset fingerprint and relevant metadata fingerprint;
-- resolved code universe and code partitions;
-- exact task definitions and IDs;
-- patient-time sampling parameters;
-- label window boundary semantics;
-- censoring policy;
-- input and output row counts by split and task;
-- creation timestamp and, when available, source revision.
+### Stage 1: random queries
 
-Changing any field that can change task identity or labels must change the collection fingerprint.
+Sample `num_queries` `(query, duration_days)` specifications using the query RNG stream.
 
-## 18. Testing strategy
+### Stage 2: random patient contexts
 
-The initial test suite should include:
+Sample `N` `(subject_id, shard, prediction_time_index)` rows using the context RNG stream.
 
-1. Doctests for public schemas and small pure functions.
-2. Unit tests for task canonicalization and stable IDs.
-3. Property tests for deterministic prediction-time sampling.
-4. Property tests for interval-boundary and censoring semantics.
-5. Tests that partition policies reject forbidden code overlap.
-6. Tests that worker count and shard order do not change output.
-7. Tests that a singleton collection exports to the standard MEDS label shape.
-8. An end-to-end synthetic MEDS test with known labels.
-9. A MIMIC-IV demo integration test, marked slow and requiring no committed data.
-10. Differential tests against EveryQuery's evaluation-task generator during migration.
+### Stage 3: resolved partitioned index
 
-The differential tests may be removed after the behavior is independently specified and the
-migration is complete; the package must not permanently define correctness as “whatever EveryQuery
-currently does.”
+Repeat queries, zip them with contexts, resolve `prediction_time_index -> prediction_time` against one shard map
+at a time, and write:
 
-## 19. Initial milestones
+```text
+artifacts/{split}/_index/{shard}.parquet
+```
 
-### Milestone 0: repository bootstrap
+The index columns are:
 
-- Instantiate the MHAL template.
-- Rename the package and update project metadata.
-- Add this design document and an initial README.
-- Confirm template tests, formatting, and pre-commit checks pass unchanged.
+```text
+subject_id, prediction_time, query, duration_days
+```
 
-### Milestone 1: schemas and manifest
+Any unresolved context or join-key dtype mismatch is a hard error.
 
-- Define `TaskSpec`, `TaskCollectionManifest`, and label schemas.
-- Define canonical serialization, stable task IDs, and collection fingerprints.
-- Implement code-list resolution and overlap policies.
+### Stage 4: shard-parallel labeling
 
-### Milestone 2: deterministic task generation
+Spawn workers rather than forking after Polars has initialized its thread pool. Each worker receives paths and a
+shard identifier, reads its own data and index, labels the rows, validates the schema, and writes its final shard
+atomically.
 
-- Implement prediction-time sampling.
-- Implement dense task-grid construction.
-- Implement event-window labeling and explicit censoring.
-- Write partitioned outputs and provenance metadata.
+The union of final shards must contain exactly `N` rows.
 
-### Milestone 3: validation and demo
+### 11.2 Dense-grid pipeline
 
-- Add collection validation and summary commands.
-- Add synthetic end-to-end tests.
-- Run a small fixed collection on the MIMIC-IV demo.
+Evaluation reuses query-code resolution, the labeling kernel, `TaskQuerySchema`, schema alignment, and atomic
+writes, but does not reuse the training sampler's Stage 0-3 orchestration.
 
-### Milestone 4: ecosystem adapters
+For one `input_shard`:
 
-- Add an EveryQuery evaluation adapter.
-- Add singleton export for current MEDS-DEV.
-- Prototype collection-aware MEDS-DEV orchestration.
-- Coordinate collection prediction and aggregation support with `meds-evaluation`.
+1. Read and sort its events by `(subject_id, time)`.
+2. Optionally retain subjects through EQ's deterministic hash-threshold subsampling rule.
+3. Identify candidate event times where the subject has accumulated at least
+    `min_context_per_subject` prior events, deduplicate `(subject_id, prediction_time)`, and sample up to
+    `prediction_times_per_subject` candidates without replacement per subject. EQ derives this seed as
+    `derive_seed(seed, "prediction_times", split, input_shard)`; subject subsampling independently uses
+    `derive_seed(seed, "subject_subsample", split, input_shard)`.
+4. Cross-join every sampled prediction time with the full resolved `query_codes x durations` grid.
+5. Label the grid with the shared future-occurrence kernel and align it to `TaskQuerySchema`.
+6. Apply the explicit `censored_rows` policy: retain null labels for general-purpose grids or remove them for
+    EQ-compatible evaluation.
+7. Atomically write `{output_dir}/{split}/{input_shard}.parquet` and, when requested, the deduplicated prediction
+    times to the sibling `{output_dir.name}_unique/{split}/{input_shard}.parquet` root.
 
-## 20. Open questions
+The expected pre-censor row count is:
 
-1. Can the canonical collection schema extend the MEDS label schema with nullable `boolean_value` and
-    `is_censored`, or should it store canonical collection labels separately and export observed-only MEDS
-    labels for compatibility?
-2. What is the canonical dataset fingerprint for a sharded MEDS dataset?
-3. Should prediction times be shared across all tasks, or may a task request its own eligibility
-    criteria?
-4. Should fixed task collections list tasks explicitly, or may a manifest contain a resolved
-    Cartesian-product declaration?
-5. Which code-normalization rules, if any, are safe across MEDS datasets?
-6. How should terminal events such as death affect censoring for unrelated outcomes?
-7. Should task IDs include dataset-specific code mappings, or should those live in a separate
-    realization identifier?
-8. What collection-prediction schema should `meds-evaluation` adopt?
-9. How should aggregate metrics treat tasks with no positives, no negatives, or only censored rows?
-10. Which behaviors should be identical to EveryQuery for migration compatibility, and which should
-    deliberately change before the first stable release?
+```text
+n_sampled_prediction_times * n_query_codes * n_durations
+```
 
-## 21. Initial decisions
+With `censored_rows="drop"`, the final count may be lower only because censored rows are removed. Dense-grid
+generation preserves EQ's current integer-duration validation even though the shared canonical schema stores
+`duration_days` as `float32`.
 
-The following decisions are considered part of the initial project direction:
+## 12. Label semantics
 
-- The repository and package are named `meds-random-task-sampler` and `meds_random_task_sampler`.
-- The repository is bootstrapped from MHAL-template.
-- The package is model-independent.
-- MEDS-DEV directly invokes fixed benchmark collection generation, not model-specific pretraining
-    sampling.
-- Benchmark task definitions are stable across patient splits.
-- Existing patient split assignments are read from MEDS `metadata/subject_splits.parquet`; the package never
-    creates an alternative train/tuning/held-out assignment.
-- Patient splits and query-code partitions are separate concepts.
-- The first task language is single-code occurrence within a fixed future horizon.
-- Prediction times are stored separately from the dense task-label table.
-- Censored examples are preserved at generation time.
-- The generator writes canonical per-task/per-split summary statistics.
-- Metric computation remains outside this package.
+Let:
+
+```text
+window_end = prediction_time + duration_days
+```
+
+The outcome window is open on the left and closed on the right:
+
+```text
+(prediction_time, window_end]
+```
+
+An event exactly at `prediction_time` is history and cannot satisfy the query. An event exactly at `window_end`
+does satisfy it.
+
+Events strictly after the earliest `MEDS_DEATH` event are ignored. The death event itself remains available as a
+query and as a prediction time.
+
+Observation is complete when either:
+
+```text
+window_end <= max_observed_time
+```
+
+or:
+
+```text
+death_time <= window_end
+```
+
+Labels are resolved in this order:
+
+1. If observation is incomplete, `boolean_value = null`.
+2. Otherwise, if a matching event occurs in the window, `boolean_value = true`.
+3. Otherwise, `boolean_value = false`.
+
+Therefore censoring beats an occurrence observed in only the partial window. Death is a fully observed terminal
+state, so a non-occurrence through death is false rather than censored.
+
+These semantics intentionally match EQ commit `9bd85a1` and must be pinned with boundary tests.
+
+## 13. Artifact and restart contract
+
+### 13.1 Training artifacts
+
+Final rows and intermediates use disjoint sibling roots:
+
+```text
+training_tasks/
+`-- {split}/
+    `-- {shard}.parquet
+
+training_tasks_artifacts/
+`-- {split}/
+    |-- _prediction_time_counts.parquet
+    |-- _prediction_times_meta.json
+    |-- _summary.json
+    |-- _prediction_times/
+    |   `-- {shard}.parquet
+    |-- _index/
+    |   `-- {shard}.parquet
+    `-- _labeled/
+        `-- {shard}.json
+```
+
+All durable writes use a unique sibling temporary file followed by `os.replace`. A present final file is therefore
+complete. Hidden temporary files are cleaned on retry.
+
+Stage 4 may skip an existing final shard only when its sidecar fingerprint matches the logical content of the
+current index partition. Stale output shards and sidecars not present in the current index are pruned.
+
+Stage 0 cache reuse validates a cheap input manifest containing every relative event-shard path, byte size, and
+modification time, plus the split, eligibility threshold, death-truncation version, sampler schema version, and
+any authoritative MEDS dataset identifier available in metadata. Any mismatch invalidates and rebuilds the
+cache. This detects normal file replacement without hashing every shard; it is not an adversarial content
+integrity guarantee.
+
+### 13.2 Dense-grid artifacts
+
+```text
+task_grid/{split}/{input_shard}.parquet
+task_grid_unique/{split}/{input_shard}.parquet  # optional
+task_grid_summary/{split}/{input_shard}.json
+```
+
+Evaluation has no training prediction-time cache or random-query index. Each independently invoked shard is
+written atomically and may be skipped when its existing output is complete and `overwrite` is false, matching
+EQ's shard-sweep workflow.
+
+## 14. Determinism contract
+
+For identical logical MEDS input, configuration, package version, and seed:
+
+- query specifications are identical;
+- patient contexts are identical;
+- paired index rows are identical;
+- labels are identical;
+- worker completion order does not affect output content;
+- restart does not change completed rows;
+- Python process hash randomization does not affect output.
+
+Compatibility with the pinned EQ commit additionally requires exact sampled values, not merely equivalent
+distributions.
+
+Byte-identical Parquet output is not required because writer metadata and row-group choices may differ. Logical
+row equality after deterministic sorting is required.
+
+## 15. EveryQuery adapters
+
+EveryQuery's existing Hydra entry point remains stable:
+
+```text
+EQ_generate_training_tasks
+```
+
+Its `run(cfg: DictConfig)` becomes approximately:
+
+```python
+def run(cfg):
+    package_config = RandomTaskSamplerConfig.from_values(
+        num_queries=cfg.num_queries,
+        num_contexts_per_query=cfg.num_contexts_per_query,
+        min_prediction_times_per_subject=cfg.min_prediction_times_per_subject,
+        query_codes=to_plain_query_code_source(cfg.query_codes),
+        min_duration_days=cfg.min_duration,
+        max_duration_days=cfg.max_duration,
+        duration_distribution=cfg.duration_distribution,
+        seed=cfg.seed,
+        max_workers=cfg.max_workers,
+    )
+    sample_random_tasks(
+        data_dir=cfg.data_dir,
+        output_dir=cfg.out_dir,
+        split=cfg.split,
+        config=package_config,
+        overwrite=cfg.overwrite,
+    )
+```
+
+The first EQ PR should preserve:
+
+- command name;
+- Hydra keys and defaults;
+- output and artifact paths;
+- task-row schema;
+- deterministic samples for frozen fixtures;
+- logging information relied upon operationally;
+- downstream dataset behavior.
+
+Only after that PR is accepted should EQ-specific compatibility wrappers be deprecated.
+
+`EQ_generate_evaluation_tasks` follows the same boundary: its Hydra wrapper converts OmegaConf containers to
+ordinary Python values and calls `generate_task_grid` with `output_dir=Path(cfg.out_dir) / "eval"` and
+`censored_rows="drop"`. The package's sibling-root convention then produces EQ's existing `eval_unique/` root.
+Its command name, shard-sweep interface, defaults, and deterministic results remain unchanged.
+
+## 16. Test migration and equivalence gate
+
+The package test suite will be built from EQ's behavioral tests, organized by stage.
+
+### Stage 0
+
+- distinct-time indexing and gapless ranks;
+- eligibility boundary (`n > minimum`);
+- death truncation;
+- subject-shard conflict rejection;
+- stable sorted subject index;
+- cache validation and invalidation.
+
+### Stage 1
+
+- exact deterministic samples for frozen seeds;
+- independent code and duration draw order;
+- uniform and log-uniform bounds and distribution shape;
+- unrounded float durations;
+- code-universe validation.
+
+### Stage 2
+
+- exact deterministic contexts for frozen seeds;
+- sampling with replacement;
+- subject draw before time draw;
+- last-time reachability;
+- join-key dtype preservation;
+- invalid eligibility detection.
+
+### Stage 3
+
+- exact query repetition order;
+- per-shard resolution;
+- no dropped unresolved rows;
+- dtype mismatch errors;
+- stale index replacement.
+
+### Stage 4
+
+- strict lower and inclusive upper bounds;
+- query-code isolation;
+- three-valued labels;
+- censoring precedence;
+- earliest-death truncation;
+- death as complete observation;
+- unknown-subject rejection;
+- atomic write and stale-temp cleanup;
+- sidecar fingerprint skip/relabel behavior;
+- worker-count invariance.
+
+### Evaluation
+
+- prior-event eligibility boundaries, including tied event times;
+- up-to-`K` without-replacement prediction-time sampling per subject;
+- determinism in `(seed, split, input_shard)`;
+- deterministic subject-subsample boundaries;
+- exact dense Cartesian grid ordering and row count;
+- required non-empty code and duration axes and integer-duration validation;
+- shared death/censor labeling semantics;
+- removal of null labels;
+- optional unique prediction-time output;
+- atomic overwrite and idempotent skip behavior.
+
+### End to end
+
+For a frozen multi-shard MEDS fixture, compare both package workflows with their pinned EQ counterparts:
+
+```text
+EveryQuery@9bd85a1 sampler
+meds-random-task-sampler
+```
+
+Compare sorted logical training rows and artifacts, then compare evaluation and unique-time rows for every
+fixture shard. The EveryQuery integration PR is blocked until both equivalence tests pass.
+
+## 17. Implementation sequence
+
+1. Add core schema constants, dataclasses, seed derivation, and query-code resolution.
+2. Implement and test Stage 1 query sampling with exact EQ fixtures.
+3. Implement and test Stage 2 context sampling with exact EQ fixtures.
+4. Implement the pure Stage 4 labeling kernel and its full death/censoring boundary suite.
+5. Implement Stage 0 prediction-time maps and cache contract.
+6. Implement Stage 3 pairing and per-shard index resolution.
+7. Implement atomic I/O, Stage 4 workers, restartability, summaries, and validation.
+8. Add a package CLI that does not use Hydra.
+9. Implement evaluation-time sampling, subject subsampling, and dense-grid construction.
+10. Add evaluation orchestration, censor filtering, unique-time output, and CLI.
+11. Run exact training and evaluation equivalence against the pinned EQ checkout.
+12. Tag a package release or pin an immutable package commit.
+13. Open the thin-adapter EveryQuery PR.
+
+Pure sampling and labeling functions come before orchestration so the compatibility contract is testable without
+large file-system fixtures.
+
+## 18. Design decisions and remaining choices
+
+### 18.1 Resolved: Python 3.11+
+
+The package supports Python 3.11 and newer so EveryQuery can adopt it without raising EQ's minimum Python
+version. MHAL-template tooling must be tested under both 3.11 and 3.12 before release.
+
+### 18.2 Resolved: move `TaskQuerySchema`
+
+`TaskQuerySchema`, schema alignment, and the typed empty-frame helper move into this package. EveryQuery may
+re-export them temporarily. This prevents the generic producer from depending on an EQ-owned consumer schema and
+gives other models one authoritative row contract.
+
+### 18.3 Resolved: package-owned code resolution
+
+Current EQ accepts three shapes for `query_codes`:
+
+1. an explicit Hydra/Python list;
+2. a YAML or Parquet file;
+3. a metadata-root directory, resolved as `{root}/metadata/codes.parquet`.
+
+For explicit lists, EQ preserves user order while removing duplicates. For Parquet/metadata input, it takes the
+unique codes and sorts them so the same RNG code index always maps to the same code. This ordering is part of
+deterministic compatibility.
+
+The package resolves all three forms. It owns YAML, Parquet, and MEDS-root resolution and deterministic ordering.
+The EQ adapters convert Hydra `ListConfig` objects to ordinary lists and otherwise pass paths through. The
+package does not import Hydra or OmegaConf. Tests pin explicit-list order preservation, file-based sorting,
+duplicate removal, empty input, non-string values, and missing `code` columns.
+
+### 18.4 Resolved: cheap file-manifest cache validation
+
+Current EQ's Stage 0 sidecar records the split, minimum prediction-time threshold, death-truncation version,
+written shards, subject count, and prediction-time row count. This catches configuration/schema evolution but
+does not prove that the underlying Parquet contents are unchanged. Replacing a shard at the same path can make a
+cache look valid.
+
+A version 0.1 cache records each relative shard path, byte size, and modification time, plus any authoritative
+MEDS dataset identifier. Cache metadata also includes the sampler schema version and every Stage 0 semantic
+input. A manifest mismatch rebuilds the cache. Copying or touching files may conservatively invalidate it, and a
+same-path/same-size/same-mtime content mutation is outside this contract. This policy affects reuse only, not
+sampled values from a fresh run.
+
+### 18.5 Resolved: zero top-level budgets are errors
+
+Current EQ is internally inconsistent:
+
+- `QueryDistribution.sample(0)` returns an empty list;
+- `sample_patient_contexts(..., n=0)` returns a typed empty frame;
+- the full Stage 3 pipeline asserts that queries and contexts are non-empty.
+
+Public configuration fails fast when a requested work axis has zero size. Training rejects zero
+`num_queries` or `num_contexts_per_query`; evaluation rejects zero `prediction_times_per_subject`, no codes, or
+no durations. This matches the effective EQ training behavior and avoids silently successful empty jobs. Pure
+lower-level helpers may still support typed empty data inputs where that makes composition and tests cleaner.
+
+### 18.6 Resolved: dense-grid generation is a version 0.1 package workflow
+
+The package includes purpose-neutral dense-grid generation alongside random sampling. It uses fixed caller-
+provided durations and per-subject prediction-time sampling, explicitly keeps or drops null labels, and optionally
+emits the deduplicated `(subject_id, prediction_time)` trajectory index. EveryQuery selects `censored_rows="drop"`
+through its adapter; other consumers may retain nullable labels with the package default.
+
+### 18.7 Deferred: package publication mechanism
+
+PyPI publication versus an immutable Git dependency is intentionally deferred. The package API and EQ
+equivalence suite must exist before selecting a release mechanism.
+
+## 19. Definition of done for the package extraction
+
+The extraction is complete when:
+
+- the package reproduces pinned EQ training samples on the equivalence fixture;
+- the package reproduces pinned EQ evaluation and unique-time outputs on the equivalence fixture;
+- its full sampler test suite passes independently of EveryQuery;
+- EveryQuery's existing sampler, dataset, training, and CLI tests pass through the adapter;
+- EveryQuery no longer contains a second implementation of generic sampling and labeling;
+- the dependency is pinned to an immutable released version;
+- documentation identifies the compatibility reference and any deliberate divergences;
+- no model-framework dependency enters this package.
+
+At that point, EveryQuery uses this package fully for random training-task generation and fixed-grid evaluation-
+task generation while retaining ownership of model training, inference, metrics, and its Hydra-facing user
+experience.
