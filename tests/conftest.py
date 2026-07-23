@@ -63,7 +63,7 @@ def synthetic_events() -> pl.DataFrame:
         └────────────┴─────────────────────┴──────────┘
     """
     codes = ["ICD//A01", "ICD//B02", "ICD//C03", "MED//D04", "MED//E05"]
-    base = datetime(2020, 1, 1)  # noqa: DTZ001 — naive ts is fine for synthetic fixtures (cf. the test_* DTZ ignore)
+    base = datetime(2020, 1, 1)
     rows = [
         {
             "subject_id": subj,

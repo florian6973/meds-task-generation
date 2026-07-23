@@ -127,7 +127,8 @@ class TestEvaluateIndexDfEdgeCases:
 
     def test_unknown_subject_raises(self):
         """An index_df row referencing a subject absent from events_df raises: index_df and events_df
-        must come from the same shard, so an unknown subject means mismatched inputs."""
+        must come from the same shard, so an unknown subject means mismatched inputs.
+        """
         events = pl.DataFrame(
             {
                 "subject_id": [1],
@@ -411,7 +412,8 @@ class TestReadEventShardDtypeNormalization:
 
     def test_normalized_shard_joins_correctly_in_evaluate(self, tmp_path):
         """End-to-end: a Categorical-coded shard must produce correct labels when fed through
-        ``_read_event_shard`` + ``evaluate_index_df``."""
+        ``_read_event_shard`` + ``evaluate_index_df``.
+        """
         fp = tmp_path / "0.parquet"
         pl.DataFrame(
             {
@@ -611,7 +613,8 @@ class TestLabelOneShard:
     def test_censoring_logic(self, tmp_path):
         """Three-valued label through the full worker: True (event in window), False (no event,
         fully observed), null (censored).  This exercises all three label values end-to-end through
-        ``label_one_shard`` (not just ``evaluate_index_df`` in isolation)."""
+        ``label_one_shard`` (not just ``evaluate_index_df`` in isolation).
+        """
         events = pl.DataFrame(
             {
                 "subject_id": [1, 1, 1, 2, 2, 3, 3],

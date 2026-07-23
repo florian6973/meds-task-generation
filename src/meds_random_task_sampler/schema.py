@@ -100,8 +100,9 @@ class TaskQuerySchema(LabelSchema):
 
 
 def empty_task_query_df() -> pl.DataFrame:
-    """Build an empty polars DataFrame shaped like ``TaskQuerySchema``'s required columns plus the inherited
-    ``boolean_value`` (the collapsed label column).
+    """Build an empty Polars DataFrame shaped like ``TaskQuerySchema``.
+
+    The frame contains the required columns plus the inherited ``boolean_value`` (the collapsed label column).
 
     Only the required columns + ``boolean_value`` are included — not every
     ``LabelSchema`` optional column — because (a) that's what the sampler's empty-input

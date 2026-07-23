@@ -7,8 +7,9 @@ the universe).
 
 import numpy as np
 import pytest
-from meds_random_task_sampler.seeds import derive_seed
+
 from meds_random_task_sampler.random_sample import QueryDistribution, QuerySpec
+from meds_random_task_sampler.seeds import derive_seed
 
 
 class TestQueryDistribution:

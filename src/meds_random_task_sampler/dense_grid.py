@@ -34,8 +34,6 @@ from typing import Literal
 import polars as pl
 from meds import DataSchema
 
-from meds_random_task_sampler.schema import TaskQuerySchema, empty_task_query_df
-from meds_random_task_sampler.seeds import derive_seed
 from meds_random_task_sampler.random_sample import (
     GenerationResult,
     QueryCodeSource,
@@ -47,6 +45,8 @@ from meds_random_task_sampler.random_sample import (
     read_query_codes,
     summarize_task_files,
 )
+from meds_random_task_sampler.schema import TaskQuerySchema, empty_task_query_df
+from meds_random_task_sampler.seeds import derive_seed
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ class TaskGridGeneratorConfig:
     seed: int = 1
 
     def __post_init__(self) -> None:
+        """Validate task-grid settings."""
         if (
             isinstance(self.prediction_times_per_subject, bool)
             or not isinstance(self.prediction_times_per_subject, int)
@@ -79,7 +80,9 @@ class TaskGridGeneratorConfig:
             raise ValueError("min_context_per_subject must be a non-negative integer")
         if not self.durations:
             raise ValueError("durations must be non-empty")
-        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in self.durations):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in self.durations
+        ):
             raise ValueError("durations must contain only positive whole-day integers")
         if self.subject_subsample_fraction is not None and (
             isinstance(self.subject_subsample_fraction, bool)
@@ -457,7 +460,7 @@ def generate_task_grid(
     """Generate one purpose-neutral dense task-grid shard."""
     source = _require_path_arg(data_dir, "data_dir")
     output = _require_path_arg(output_dir, "output_dir")
-    labels_fp = run_worker(
+    run_worker(
         data_dir=source,
         out_dir=output,
         split=split,

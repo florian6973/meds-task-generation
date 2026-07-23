@@ -8,8 +8,8 @@ import polars as pl
 import pytest
 
 from meds_random_task_sampler import (
-    TaskGridGeneratorConfig,
     RandomTaskSamplerConfig,
+    TaskGridGeneratorConfig,
     TaskQuerySchema,
     generate_task_grid,
     read_query_codes,

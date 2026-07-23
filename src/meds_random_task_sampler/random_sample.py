@@ -68,6 +68,7 @@ class RandomTaskSamplerConfig:
     max_workers: int | None = None
 
     def __post_init__(self) -> None:
+        """Validate sampler settings."""
         for name in ("num_queries", "num_contexts_per_query"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -76,7 +77,9 @@ class RandomTaskSamplerConfig:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError("min_prediction_times_per_subject must be a non-negative integer")
         if self.max_workers is not None and (
-            isinstance(self.max_workers, bool) or not isinstance(self.max_workers, int) or self.max_workers <= 0
+            isinstance(self.max_workers, bool)
+            or not isinstance(self.max_workers, int)
+            or self.max_workers <= 0
         ):
             raise ValueError("max_workers must be a positive integer or None")
 
@@ -161,9 +164,14 @@ class QueryDistribution:
     _VALID_DISTRIBUTIONS = ("uniform", "log-uniform")
 
     def __post_init__(self) -> None:
+        """Validate the query distribution."""
         if not self.query_codes:
             raise ValueError("query_codes must be non-empty")
-        if isinstance(self.min_duration, bool) or not math.isfinite(self.min_duration) or self.min_duration <= 0:
+        if (
+            isinstance(self.min_duration, bool)
+            or not math.isfinite(self.min_duration)
+            or self.min_duration <= 0
+        ):
             raise ValueError(
                 f"min_duration must be > 0 (got {self.min_duration}); durations must be positive days "
                 "and log-uniform needs positive bounds"
@@ -1120,8 +1128,10 @@ def _prediction_time_cache_valid(
 
 
 def _assert_no_subject_spans_shards(distinct: pl.DataFrame) -> None:
-    """Invariant 4: a subject lives in exactly one shard (Stage 4 derives ``max_time`` from a single
-    shard).  Raises ``ValueError`` naming the offenders ``{subject_id: shards}`` on violation.
+    """Ensure a subject lives in exactly one shard.
+
+    Stage 4 derives ``max_time`` from a single shard. Raises ``ValueError`` naming the offenders
+    ``{subject_id: shards}`` on violation.
     """
     spanning = (
         distinct.group_by("subject_id")
@@ -1724,4 +1734,6 @@ def sample_random_tasks(
         },
         training_task_artifacts_dir / split / "_summary.json",
     )
-    return GenerationResult(training_tasks_dir / split, training_task_artifacts_dir / split, written, n_index_shards)
+    return GenerationResult(
+        training_tasks_dir / split, training_task_artifacts_dir / split, written, n_index_shards
+    )
